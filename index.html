@@ -116,11 +116,24 @@
 
         // Haal playlist-data op
         async function fetchPlaylistData(token, playlistUrl) {
+            console.log("Fetching playlist data..."); // Stap 1
             const playlistId = playlistUrl.split('/').pop().split('?')[0];
-            const response = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
+            console.log("Playlist ID:", playlistId); // Stap 2
+        
+            const proxyUrl = 'https://cors-anywhere.herokuapp.com/';
+            const response = await fetch(proxyUrl + `https://api.spotify.com/v1/playlists/${playlistId}`, {
                 headers: { 'Authorization': 'Bearer ' + token }
             });
-            return await response.json();
+            console.log("Response status:", response.status); // Stap 3
+        
+            const data = await response.json();
+            console.log("Playlist data:", data); // Stap 4
+        
+            if (!data.tracks?.items) {
+                console.error("Geen tracks gevonden! Controleer of de playlist openbaar is.");
+                throw new Error("Geen tracks gevonden.");
+            }
+            return data;
         }
 
         // Genereer een QR-code als data URL
