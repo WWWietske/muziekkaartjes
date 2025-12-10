@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="nl">
+<head>
+    <meta charset="UTF-8">
+    <title>Spotify Playlist Kaartjes Generator</title>
+    <script type="text/javascript" src="https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            line-height: 1.6;
+        }
+        #credentials {
+            background: #f5f5f5;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 20px;
+        }
+        input, button {
+            padding: 10px;
+            margin: 5px 0;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button {
+            background: #1DB954;
+            color: white;
+            border: none;
+            cursor: pointer;
+            font-weight: bold;
+            margin-top: 10px;
+        }
+        button:hover {
+            background: #1ed760;
+        }
+        #loading {
+            display: none;
+            color: #1DB954;
+            font-weight: bold;
+            margin: 20px 0;
+        }
+        #output {
+            margin-top: 20px;
+            padding: 15px;
+            border: 1px solid #ddd;
+            border-radius: 8px;
+            background: #f9f9f9;
+        }
+        .hidden {
+            display: none;
+        }
+        embed {
+            width: 100%;
+            height: 500px;
+            border: 1px solid #ddd;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+<body>
+    <h1>🎵 Spotify Playlist Kaartjes Generator</h1>
+    <p>Genereer PDF-kaartjes van je Spotify-playlist. <strong>Je credentials blijven lokaal op je apparaat!</strong></p>
+
+    <div id="credentials">
+        <h2>⚙ Instellingen</h2>
+        <input type="text" id="clientId" placeholder="Spotify Client ID" required>
+        <input type="password" id="clientSecret" placeholder="Spotify Client Secret" required>
+        <input type="text" id="playlistUrl" placeholder="Spotify Playlist URL"
+               value="https://open.spotify.com/playlist/0S0X1EY5fNnmyLStgH6KB8">
+        <button onclick="runPythonCode()">Genereer Kaartjes</button>
+    </div>
+
+    <div id="loading" class="hidden">
+        ⏳ Bezig met genereren... (dit kan 1-2 minuten duren)
+        <div class="progress-bar" style="width: 0%; height: 5px; background: #1DB954; margin-top: 5px;"></div>
+    </div>
+
+    <div id="output" class="hidden"></div>
+
+    <script>
+        let pyodide = null;
+        let pythonCode = ""; // Wordt geladen vanaf script.py
+
+        // Laad de Python-code vanuit een apart bestand
+        async function loadPythonScript() {
+            const response = await fetch('script.py');
+            pythonCode = await response.text();
+            console.log("Python script geladen!");
+        }
+
+        // Initialiseer Pyodide
+        async function loadPyodide() {
+            document.getElementById("loading").classList.remove("hidden");
+            document.querySelector(".progress-bar").style.width = "10%";
+
+            pyodide = await loadPyodide({
+                indexURL: "https://cdn.jsdelivr.net/pyodide/v0.23.4/full/"
+            });
+
+            document.querySelector(".progress-bar").style.width = "30%";
+            await pyodide.loadPackage(["pandas", "qrcode-pil", "reportlab", "Pillow"]);
+            document.querySelector(".progress-bar").style.width = "60%";
+
+            console.log("Pyodide en packages geladen!");
+            document.getElementById("loading").classList.add("hidden");
+        }
+
+        // Voer de Python-code uit
+        async function runPythonCode() {
+            document.getElementById("output").classList.add("hidden");
+            document.getElementById("loading").classList.remove("hidden");
+            document.querySelector(".progress-bar").style.width = "0%";
+
+            const clientId = document.getElementById("clientId").value;
+            const clientSecret = document.getElementById("clientSecret").value;
+            const playlistUrl = document.getElementById("playlistUrl").value;
+
+            if (!clientId || !clientSecret || !playlistUrl) {
+                alert("Vul alle velden in!");
+                document.getElementById("loading").classList.add("hidden");
+                return;
+            }
+
+            // Laad Pyodide als dat nog niet is gebeurd
+            if (!pyodide) {
+                await loadPyodide();
+            }
+            document.querySelector(".progress-bar").style.width = "70%";
+
+            try {
+                // Vervang placeholders in de Python-code
+                const finalCode = pythonCode
+                    .replace("CLIENT_ID_PLACEHOLDER", `"${clientId}"`)
+                    .replace("CLIENT_SECRET_PLACEHOLDER", `"${clientSecret}"`)
+                    .replace("PLAYLIST_URL_PLACEHOLDER", `"${playlistUrl}"`);
+
+                document.querySelector(".progress-bar").style.width = "80%";
+                const result = await pyodide.runPythonAsync(finalCode);
+
+                if (result.startsWith("DONE:")) {
+                    document.querySelector(".progress-bar").style.width = "100%";
+                    const base64Pdf = result.replace("DONE:", "");
+                    const pdfBlob = base64ToBlob(base64Pdf, 'application/pdf');
+                    const pdfUrl = URL.createObjectURL(pdfBlob);
+
+                    document.getElementById("output").innerHTML = `
+                        <h2>✅ Kaartjes gegenereerd!</h2>
+                        <p>Je kunt de PDF nu downloaden:</p>
+                        <a href="${pdfUrl}" download="spotify_kaartjes.pdf" class="button">📥 Download PDF</a>
+                        <p>Voorbeeld:</p>
+                        <embed src="${pdfUrl}" type="application/pdf">
+                    `;
+                    document.getElementById("output").classList.remove("hidden");
+                }
+            } catch (error) {
+                document.getElementById("output").innerHTML = `
+                    <h2>❌ Fout!</h2>
+                    <p>Er is iets misgegaan. Controleer je invoer en probeer het opnieuw.</p>
+                    <pre>${error}</pre>
+                `;
+                document.getElementById("output").classList.remove("hidden");
+                console.error(error);
+            } finally {
+                document.getElementById("loading").classList.add("hidden");
+            }
+        }
+
+        // Hulpfunctie: Base64 naar Blob
+        function base64ToBlob(base64, type) {
+            const byteCharacters = atob(base64);
+            const byteArrays = [];
+            for (let i = 0; i < byteCharacters.length; i++) {
+                byteArrays.push(byteCharacters.charCodeAt(i));
+            }
+            const byteArray = new Uint8Array(byteArrays);
+            return new Blob([byteArray], { type: type });
+        }
+
+        // Laad alles bij startup
+        window.onload = async function() {
+            await loadPythonScript();
+            await loadPyodide();
+        };
+    </script>
+</body>
+</html>
