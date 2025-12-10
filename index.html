@@ -2,8 +2,13 @@
 <html lang="nl">
 <head>
     <meta charset="UTF-8">
-    <title>Spotify Playlist Kaartjes Generator</title>
-    <script type="text/javascript" src="https://cdn.jsdelivr.net/pyodide/v0.23.4/full/pyodide.js"></script>
+    <title>Spotify Kaartjes Generator (JS)</title>
+    <!-- PDFKit (voor PDF-generatie) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdfkit/0.12.3/pdfkit.standalone.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Blob.js/2.0.0/Blob.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+    <!-- QRCode.js -->
+    <script src="https://cdn.rawgit.com/davidshimjs/qrcodejs/gh-pages/qrcode.min.js"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -19,9 +24,9 @@
             margin-bottom: 20px;
         }
         input, button {
+            width: 100%;
             padding: 10px;
             margin: 5px 0;
-            width: 100%;
             box-sizing: border-box;
         }
         button {
@@ -30,15 +35,10 @@
             border: none;
             cursor: pointer;
             font-weight: bold;
-            margin-top: 10px;
-        }
-        button:hover {
-            background: #1ed760;
         }
         #loading {
             display: none;
-            color: #1DB954;
-            font-weight: bold;
+            text-align: center;
             margin: 20px 0;
         }
         #output {
@@ -48,141 +48,252 @@
             border-radius: 8px;
             background: #f9f9f9;
         }
-        .hidden {
-            display: none;
+        .card-preview {
+            display: inline-block;
+            width: 200px;
+            height: 120px;
+            margin: 10px;
+            background: #eee;
+            position: relative;
+            overflow: hidden;
         }
-        embed {
-            width: 100%;
-            height: 500px;
-            border: 1px solid #ddd;
-            margin-top: 10px;
+        .hidden { display: none; }
+        .progress-bar {
+            height: 5px;
+            background: #1DB954;
+            width: 0%;
+            transition: width 0.3s;
         }
     </style>
 </head>
 <body>
-    <h1>🎵 Spotify Playlist Kaartjes Generator</h1>
-    <p>Genereer PDF-kaartjes van je Spotify-playlist. <strong>Je credentials blijven lokaal op je apparaat!</strong></p>
+    <h1>🎵 Spotify Playlist Kaartjes (Pure JS)</h1>
+    <p>Genereer PDF-kaartjes van je Spotify-playlist. <strong>Je credentials blijven lokaal!</strong></p>
 
     <div id="credentials">
-        <h2>⚙ Instellingen</h2>
         <input type="text" id="clientId" placeholder="Spotify Client ID" required>
         <input type="password" id="clientSecret" placeholder="Spotify Client Secret" required>
-        <input type="text" id="playlistUrl" placeholder="Spotify Playlist URL"
-               value="https://open.spotify.com/playlist/0S0X1EY5fNnmyLStgH6KB8">
-        <button onclick="runPythonCode()">Genereer Kaartjes</button>
+        <input type="text" id="playlistUrl" placeholder="Playlist URL"
+               value="https://open.spotify.com/playlist/37i9dQZF1DX4SBhb3fqCJd">
+        <button onclick="generateCards()">Genereer Kaartjes</button>
     </div>
 
     <div id="loading" class="hidden">
-        ⏳ Bezig met genereren... (dit kan 1-2 minuten duren)
-        <div class="progress-bar" style="width: 0%; height: 5px; background: #1DB954; margin-top: 5px;"></div>
+        <div class="progress-bar"></div>
+        <p>⏳ Bezig met ophalen playlist...</p>
     </div>
 
-    <div id="output" class="hidden"></div>
+    <div id="output" class="hidden">
+        <h2>✅ Kaartjes gegenereerd!</h2>
+        <div id="preview"></div>
+        <button id="downloadPdf" style="background: #1DB954; color: white; border: none; padding: 10px; margin-top: 10px;">
+            📥 Download PDF
+        </button>
+    </div>
 
     <script>
-        let pyodide = null;
-        let pythonCode = ""; // Wordt geladen vanaf script.py
+        // Achtergrondkleuren voor kaartjes
+        const backgroundColors = [
+            'rgba(255, 200, 200, 0.8)', 'rgba(255, 220, 200, 0.8)',
+            'rgba(255, 255, 200, 0.8)', 'rgba(200, 255, 200, 0.8)',
+            'rgba(200, 255, 255, 0.8)', 'rgba(200, 220, 255, 0.8)',
+            'rgba(220, 200, 255, 0.8)', 'rgba(255, 200, 220, 0.8)'
+        ];
 
-        // Laad de Python-code vanuit een apart bestand
-        async function loadPythonScript() {
-            const response = await fetch('script.py');
-            pythonCode = await response.text();
-            console.log("Python script geladen!");
-        }
-
-        // Initialiseer Pyodide
-        async function loadPyodide() {
-            document.getElementById("loading").classList.remove("hidden");
-            document.querySelector(".progress-bar").style.width = "10%";
-
-            pyodide = await loadPyodide({
-                indexURL: "https://cdn.jsdelivr.net/pyodide/v0.23.4/full/"
+        // Haal Spotify access token op
+        async function getSpotifyToken(clientId, clientSecret) {
+            const response = await fetch('https://accounts.spotify.com/api/token', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/x-www-form-urlencoded',
+                    'Authorization': 'Basic ' + btoa(clientId + ':' + clientSecret)
+                },
+                body: 'grant_type=client_credentials'
             });
-
-            document.querySelector(".progress-bar").style.width = "30%";
-            await pyodide.loadPackage(["pandas", "qrcode-pil", "reportlab", "Pillow"]);
-            document.querySelector(".progress-bar").style.width = "60%";
-
-            console.log("Pyodide en packages geladen!");
-            document.getElementById("loading").classList.add("hidden");
+            const data = await response.json();
+            return data.access_token;
         }
 
-        // Voer de Python-code uit
-        async function runPythonCode() {
-            document.getElementById("output").classList.add("hidden");
-            document.getElementById("loading").classList.remove("hidden");
-            document.querySelector(".progress-bar").style.width = "0%";
+        // Haal playlist-data op
+        async function fetchPlaylistData(token, playlistUrl) {
+            const playlistId = playlistUrl.split('/').pop().split('?')[0];
+            const response = await fetch(`https://api.spotify.com/v1/playlists/${playlistId}`, {
+                headers: { 'Authorization': 'Bearer ' + token }
+            });
+            return await response.json();
+        }
 
-            const clientId = document.getElementById("clientId").value;
-            const clientSecret = document.getElementById("clientSecret").value;
-            const playlistUrl = document.getElementById("playlistUrl").value;
+        // Genereer een QR-code als data URL
+        function generateQRCode(url) {
+            return new Promise((resolve) => {
+                const qrCode = new QRCode({
+                    text: url,
+                    width: 100,
+                    height: 100,
+                    colorDark: "#000000",
+                    colorLight: "#ffffff",
+                });
+                resolve(qrCode.toDataURL());
+            });
+        }
+
+        // Genereer PDF met PDFKit
+        function generatePDF(tracks) {
+            return new Promise((resolve) => {
+                const doc = new PDFDocument({ size: 'A4' });
+                const buffers = [];
+                doc.on('data', buffers.push.bind(buffers));
+                doc.on('end', () => {
+                    const pdfBlob = new Blob(buffers, { type: 'application/pdf' });
+                    resolve(pdfBlob);
+                });
+
+                // 2 kolommen, 3 rijen per pagina
+                const cardWidth = 180;
+                const cardHeight = 100;
+                const margin = 30;
+                const cols = 2;
+                const rows = 3;
+                const cardsPerPage = cols * rows;
+
+                tracks.forEach((track, index) => {
+                    const pageNum = Math.floor(index / cardsPerPage);
+                    const col = index % cols;
+                    const row = Math.floor((index % cardsPerPage) / cols);
+
+                    // Nieuwe pagina beginnen
+                    if (index % cardsPerPage === 0 && index > 0) {
+                        doc.addPage();
+                    }
+
+                    // Kaartje tekenen
+                    const x = margin + col * (cardWidth + 20);
+                    const y = margin + row * (cardHeight + 20);
+
+                    // Achtergrond
+                    doc.rect(x, y, cardWidth, cardHeight)
+                       .fillAndStroke(track.color, '#ccc');
+
+                    // Tekst
+                    doc.fillColor('#000')
+                       .fontSize(10)
+                       .text(track.artist, x + 10, y + cardHeight - 20, { width: cardWidth - 20 });
+
+                    doc.fontSize(12)
+                       .text(track.title, x + 10, y + cardHeight - 40, { width: cardWidth - 20 });
+
+                    doc.fontSize(24)
+                       .text(track.year, x + 10, y + cardHeight - 70);
+                });
+
+                doc.end();
+            });
+        }
+
+        // Toon preview van kaartjes
+        function showPreview(tracks) {
+            const previewContainer = document.getElementById('preview');
+            previewContainer.innerHTML = '';
+
+            tracks.slice(0, 6).forEach((track, index) => {
+                const card = document.createElement('div');
+                card.className = 'card-preview';
+                card.style.backgroundColor = track.color;
+
+                const title = document.createElement('div');
+                title.textContent = track.title;
+                title.style.fontWeight = 'bold';
+                title.style.fontSize = '12px';
+                title.style.margin = '5px';
+                title.style.color = '#000';
+
+                const artist = document.createElement('div');
+                artist.textContent = track.artist;
+                artist.style.fontSize = '10px';
+                artist.style.margin = '5px';
+                artist.style.color = '#000';
+
+                const year = document.createElement('div');
+                year.textContent = track.year;
+                year.style.fontSize = '20px';
+                year.style.margin = '5px';
+                year.style.color = '#000';
+
+                card.appendChild(title);
+                card.appendChild(artist);
+                card.appendChild(year);
+                previewContainer.appendChild(card);
+            });
+        }
+
+        // Hoofd functie
+        async function generateCards() {
+            const clientId = document.getElementById('clientId').value;
+            const clientSecret = document.getElementById('clientSecret').value;
+            const playlistUrl = document.getElementById('playlistUrl').value;
 
             if (!clientId || !clientSecret || !playlistUrl) {
-                alert("Vul alle velden in!");
-                document.getElementById("loading").classList.add("hidden");
+                alert('Vul alle velden in!');
                 return;
             }
 
-            // Laad Pyodide als dat nog niet is gebeurd
-            if (!pyodide) {
-                await loadPyodide();
-            }
-            document.querySelector(".progress-bar").style.width = "70%";
+            document.getElementById('loading').classList.remove('hidden');
+            document.getElementById('output').classList.add('hidden');
+            document.querySelector('.progress-bar').style.width = '10%';
 
             try {
-                // Vervang placeholders in de Python-code
-                const finalCode = pythonCode
-                    .replace("CLIENT_ID_PLACEHOLDER", `"${clientId}"`)
-                    .replace("CLIENT_SECRET_PLACEHOLDER", `"${clientSecret}"`)
-                    .replace("PLAYLIST_URL_PLACEHOLDER", `"${playlistUrl}"`);
+                // 1. Haal Spotify token op
+                document.querySelector('.progress-bar').style.width = '20%';
+                const token = await getSpotifyToken(clientId, clientSecret);
 
-                document.querySelector(".progress-bar").style.width = "80%";
-                const result = await pyodide.runPythonAsync(finalCode);
+                // 2. Haal playlist data op
+                document.querySelector('.progress-bar').style.width = '40%';
+                const playlistData = await fetchPlaylistData(token, playlistUrl);
 
-                if (result.startsWith("DONE:")) {
-                    document.querySelector(".progress-bar").style.width = "100%";
-                    const base64Pdf = result.replace("DONE:", "");
-                    const pdfBlob = base64ToBlob(base64Pdf, 'application/pdf');
-                    const pdfUrl = URL.createObjectURL(pdfBlob);
+                // 3. Verwerk tracks
+                document.querySelector('.progress-bar').style.width = '60%';
+                const tracks = playlistData.tracks.items
+                    .filter(item => item.track)
+                    .map((item, index) => {
+                        const track = item.track;
+                        return {
+                            title: track.name,
+                            artist: track.artists.map(a => a.name).join(', '),
+                            year: track.album.release_date?.split('-')[0] || 'Onbekend',
+                            url: track.external_urls.spotify,
+                            color: backgroundColors[index % backgroundColors.length]
+                        };
+                    });
 
-                    document.getElementById("output").innerHTML = `
-                        <h2>✅ Kaartjes gegenereerd!</h2>
-                        <p>Je kunt de PDF nu downloaden:</p>
-                        <a href="${pdfUrl}" download="spotify_kaartjes.pdf" class="button">📥 Download PDF</a>
-                        <p>Voorbeeld:</p>
-                        <embed src="${pdfUrl}" type="application/pdf">
-                    `;
-                    document.getElementById("output").classList.remove("hidden");
-                }
+                // 4. Toon preview
+                document.querySelector('.progress-bar').style.width = '80%';
+                showPreview(tracks);
+
+                // 5. Genereer PDF
+                document.querySelector('.progress-bar').style.width = '90%';
+                const pdfBlob = await generatePDF(tracks);
+
+                // 6. Toon download knop
+                document.querySelector('.progress-bar').style.width = '100%';
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('output').classList.remove('hidden');
+
+                // Voeg download functionaliteit toe
+                document.getElementById('downloadPdf').onclick = () => {
+                    saveAs(pdfBlob, 'spotify_kaartjes.pdf');
+                };
+
             } catch (error) {
-                document.getElementById("output").innerHTML = `
-                    <h2>❌ Fout!</h2>
-                    <p>Er is iets misgegaan. Controleer je invoer en probeer het opnieuw.</p>
-                    <pre>${error}</pre>
+                document.getElementById('loading').classList.add('hidden');
+                document.getElementById('output').innerHTML = `
+                    <h2 style="color: red;">❌ Fout!</h2>
+                    <p>${error.message}</p>
+                    <p>Controleer je Spotify API credentials en playlist URL.</p>
                 `;
-                document.getElementById("output").classList.remove("hidden");
+                document.getElementById('output').classList.remove('hidden');
                 console.error(error);
-            } finally {
-                document.getElementById("loading").classList.add("hidden");
             }
         }
-
-        // Hulpfunctie: Base64 naar Blob
-        function base64ToBlob(base64, type) {
-            const byteCharacters = atob(base64);
-            const byteArrays = [];
-            for (let i = 0; i < byteCharacters.length; i++) {
-                byteArrays.push(byteCharacters.charCodeAt(i));
-            }
-            const byteArray = new Uint8Array(byteArrays);
-            return new Blob([byteArray], { type: type });
-        }
-
-        // Laad alles bij startup
-        window.onload = async function() {
-            await loadPythonScript();
-            await loadPyodide();
-        };
     </script>
 </body>
 </html>
